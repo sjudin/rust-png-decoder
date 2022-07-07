@@ -1,0 +1,13 @@
+[package]
+name = "png_reader"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rust_png_reader"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+flate2 = "1.0.2"
+pyo3 = { version = "0.16.5", features = ["extension-module"] }
+colored = "2.0.0"
