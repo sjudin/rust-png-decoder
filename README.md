@@ -41,10 +41,17 @@ python plotter.py <path/to/a/png>
 ```
 
 ## Limitations
-Only index-colored png images are supported so far, if you try to decode an image
-which is not of this format an error will be raised. You can convert any .png to
+Does not support images that use [interlacing](https://www.w3.org/TR/2003/REC-PNG-20031110/#8Interlace)
+
+Supported formats are:
+* Indexed color
+* Truecolor
+* Truecolor with alpha (alpha channel will be ignored)
+* Grayscale
+
+if you try to decode an image which is not of this format an error will be raised. You can convert any .png to
 index-colored format using [magick](https://imagemagick.org/index.php)
 ```
-magick <path/to/input/png> -type palette <path/to/output/png>
+magick <path/to/input/png> -type palette -colors 255 <path/to/output/png>
 ```
 
