@@ -3,12 +3,25 @@ use pyo3::prelude::*;
 mod decoder;
 mod parser;
 
+use crate::parser::{parse_png, Color};
+
+fn parse_and_decode_png(path: &String) -> Vec<Vec<Color>> {
+    let png_image = match parse_png(path) {
+        Ok(png) => png,
+        Err(error) => panic!("An error occured while parsing png file: \"{}\"", error),
+    };
+
+    match decoder::decode_png(&png_image) {
+        Some(image) => image,
+        None => panic!("This format is not supported yet!"),
+    }
+}
+
+/// Read and decode a png file and return a two-dimensional vector of RGB values
 #[pyfunction]
 fn read_png(path: String) -> PyResult<Vec<Vec<(u8, u8, u8)>>> {
     let mut res: Vec<Vec<(u8, u8, u8)>> = Vec::new();
-
-    let png_file: parser::PngImage = parser::parse_png(&path).unwrap();
-    let img = decoder::png_indexed_color_to_pixels(&png_file);
+    let img = parse_and_decode_png(&path);
 
     for row in img {
         let mut tmp: Vec<(u8, u8, u8)> = Vec::new();
@@ -21,9 +34,9 @@ fn read_png(path: String) -> PyResult<Vec<Vec<(u8, u8, u8)>>> {
     Ok(res)
 }
 
+/// Read and decode a png file and return a two-dimensional vector of RGB values
 pub fn read_and_print_png(path: &String) {
-    let png_file: parser::PngImage = parser::parse_png(path).unwrap();
-    let img = decoder::png_indexed_color_to_pixels(&png_file);
+    let img = parse_and_decode_png(path);
     decoder::print_png(&img);
 }
 

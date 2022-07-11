@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::io::Read;
 
 pub type Result<T> = std::result::Result<T, PngError>;
@@ -32,7 +30,7 @@ impl std::fmt::Display for PngError {
 }
 
 #[derive(Debug)]
-enum ColorType {
+pub enum ColorType {
     Grayscale,
     Truecolor,
     IndexedColor,
@@ -151,7 +149,7 @@ pub struct PngImage {
     pub width: u32,
     pub height: u32,
     pub bit_depth: u8,
-    color_type: ColorType,
+    pub color_type: ColorType,
     compression_method: CompressionMethod,
     filter_method: FilterMethod,
     interlace_method: InterlaceMethod,
@@ -257,6 +255,31 @@ fn decompress(data: &Vec<u8>) -> Result<Vec<u8>> {
     }
 }
 
+/// Calculate and return the number of bytes needed to contain a scanline excluding
+/// the filter byte. Also return the offset (bytes) to the previous pixel in the scanline
+fn calc_bytes_per_scanline_and_filt_offset(
+    width: u32,
+    bit_depth: u8,
+    color_type: &ColorType,
+) -> Result<(usize, usize)> {
+    match color_type {
+        ColorType::IndexedColor => {
+            let bits_per_scanline = (width * bit_depth as u32) as f32;
+            Ok(((bits_per_scanline / 8.0).ceil() as usize, 1))
+        }
+        ColorType::Grayscale => {
+            let bits_per_scanline = (width * bit_depth as u32) as f32;
+            Ok(((bits_per_scanline / 8.0).ceil() as usize, 1))
+        }
+        ColorType::Truecolor => Ok(((width * bit_depth as u32 / 8 * 3) as usize, 3)),
+        ColorType::TrueColorWithAlpha => Ok(((width * bit_depth as u32 / 8 * 4) as usize, 4)),
+        _ => Err(PngError::NotSupported(
+            "calc_bytes_per_scanline not implemented for this ColorType".to_string(),
+        )),
+    }
+}
+
+/// Return the result of a Paeth predictor with values a,b and c
 fn paeth_predictor(a: i32, b: i32, c: i32) -> i32 {
     let p = a.wrapping_add(b).wrapping_sub(c);
     let pa = p.abs_diff(a);
@@ -274,9 +297,15 @@ fn paeth_predictor(a: i32, b: i32, c: i32) -> i32 {
 /// Return the value of the A byte according to the png specification The A byte is
 /// defined as the byte to the left of the current byte in the scanline. If we are
 /// in the beginning of a scanline the A byte is 0
-fn get_a(scanline_idx: usize, bytes_per_scanline: usize, byte_idx: usize, rec: &[u8]) -> i32 {
-    if byte_idx > 0 {
-        rec[scanline_idx * bytes_per_scanline + byte_idx - 1] as i32
+fn get_a(
+    scanline_idx: usize,
+    bytes_per_scanline: usize,
+    offset: usize,
+    byte_idx: usize,
+    rec: &[u8],
+) -> i32 {
+    if byte_idx >= offset {
+        rec[scanline_idx * bytes_per_scanline + byte_idx - offset] as i32
     } else {
         0
     }
@@ -285,7 +314,13 @@ fn get_a(scanline_idx: usize, bytes_per_scanline: usize, byte_idx: usize, rec: &
 /// defined as the byte "above" the current byte in the scanline, ie the byte at
 /// the same position in the scanline from the previous scanline If we are
 /// on the first scanline there will be no scanline above and B will be 0
-fn get_b(scanline_idx: usize, bytes_per_scanline: usize, byte_idx: usize, rec: &[u8]) -> i32 {
+fn get_b(
+    scanline_idx: usize,
+    bytes_per_scanline: usize,
+    _: usize,
+    byte_idx: usize,
+    rec: &[u8],
+) -> i32 {
     if scanline_idx > 0 {
         rec[(scanline_idx - 1) * bytes_per_scanline + byte_idx] as i32
     } else {
@@ -295,9 +330,15 @@ fn get_b(scanline_idx: usize, bytes_per_scanline: usize, byte_idx: usize, rec: &
 /// Return the value of the C byte according to the png specification The C byte is
 /// defined as the byte to the left of the B byte. If we are on the first scanline
 /// or the first byte in a scanline C will be 0
-fn get_c(scanline_idx: usize, bytes_per_scanline: usize, byte_idx: usize, rec: &[u8]) -> i32 {
-    if scanline_idx > 0 && byte_idx > 0 {
-        rec[(scanline_idx - 1) * bytes_per_scanline + byte_idx - 1] as i32
+fn get_c(
+    scanline_idx: usize,
+    bytes_per_scanline: usize,
+    offset: usize,
+    byte_idx: usize,
+    rec: &[u8],
+) -> i32 {
+    if scanline_idx > 0 && byte_idx >= offset {
+        rec[(scanline_idx - 1) * bytes_per_scanline + byte_idx - offset] as i32
     } else {
         0
     }
@@ -305,17 +346,16 @@ fn get_c(scanline_idx: usize, bytes_per_scanline: usize, byte_idx: usize, rec: &
 
 /// Perform reconstruction on the png image data and return a vector containing
 /// the decoded data
-fn reconstruct(data: &[u8], width: u32, height: u32, bit_depth: u8) -> Result<Vec<u8>> {
+fn reconstruct(
+    data: &[u8],
+    height: u32,
+    bytes_per_scanline: usize,
+    offset: usize,
+) -> Result<Vec<u8>> {
     let mut res: Vec<u8> = Vec::new();
-    let bits_per_scanline = (width * bit_depth as u32) as f32;
-
-    // How many bytes required to store each scanline, excluding the filter
-    // byte
-    let bytes_per_scanline = (bits_per_scanline / 8.0).ceil() as usize;
 
     let mut byte_count = 0;
     for scanline_idx in 0..height as usize {
-        // let filter_type = data[scanline_idx * bytes_per_scanline];
         let filter_type = data[byte_count];
         byte_count += 1;
 
@@ -325,9 +365,9 @@ fn reconstruct(data: &[u8], width: u32, height: u32, bit_depth: u8) -> Result<Ve
 
             // A bit unessecary to get these each iteration regardless of
             // filter type but it looks a little cleaner code-wise
-            let a = get_a(scanline_idx, bytes_per_scanline, byte_idx, &res);
-            let b = get_b(scanline_idx, bytes_per_scanline, byte_idx, &res);
-            let c = get_c(scanline_idx, bytes_per_scanline, byte_idx, &res);
+            let a = get_a(scanline_idx, bytes_per_scanline, offset, byte_idx, &res);
+            let b = get_b(scanline_idx, bytes_per_scanline, offset, byte_idx, &res);
+            let c = get_c(scanline_idx, bytes_per_scanline, offset, byte_idx, &res);
 
             let filt_x = match filter_type {
                 0 => x,                            // None
@@ -410,29 +450,16 @@ pub fn parse_png(path: &String) -> Result<PngImage> {
         return Err(PngError::NotSupported("Adam7 interlacing".to_string()));
     }
 
-    // We only support index-colored images
-    if !matches!(color_type, ColorType::IndexedColor) {
-        return Err(PngError::NotSupported(
-            "Only indexed color images are supported".to_string(),
-        ));
-    }
-
-    let palette = match parse_palette(&chunks) {
-        Some(palette) => Some(palette),
-        None => {
-            return Err(PngError::WrongFormat(
-                "PLTE chunk missing, this should always be present in index \
-                colored images"
-                    .to_string(),
-            ))
-        }
-    };
+    let palette = parse_palette(&chunks);
 
     // Collect data from all IDAT blocks into a Vec<u8> and perform operations
     // to reconstruct the image data
     let idat_data = collect_idat_data(chunks);
     let decompressed = decompress(&idat_data)?;
-    let data = reconstruct(&decompressed, width, height, bit_depth)?;
+    // let bytes_per_scanline = calc_bytes_per_scanline(width, bit_depth, &color_type)?;
+    let (bytes_per_pixel, filt_offset) =
+        calc_bytes_per_scanline_and_filt_offset(width, bit_depth, &color_type)?;
+    let data = reconstruct(&decompressed, height, bytes_per_pixel, filt_offset)?;
 
     Ok(PngImage {
         width,
